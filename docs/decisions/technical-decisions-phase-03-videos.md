@@ -42,7 +42,7 @@ _Subprojects in scope:_
 
 **Recommendation:** **Option A (BullMQ + Redis)** — The phase brief explicitly frames the queue as the "principal decisão de stack da fase" expecting dedicated infrastructure, not a workaround to avoid it. BullMQ's native `attempts`/`backoff`/`failed`-event API maps directly onto TD-09's failure-handling requirement with the least custom code, and `@nestjs/bullmq` is an officially maintained package confirmed compatible with the installed NestJS 11.
 
-**Decision:** _[pending]_
+**Decision:** A (BullMQ + Redis)
 
 ---
 
@@ -73,7 +73,7 @@ _Subprojects in scope:_
 
 **Recommendation:** **Option A (Presigned S3/MinIO Multipart Upload)** — It is the only option that fully removes file bytes from the API's path while adding no new infrastructure beyond the already-mandated MinIO, and it gives resumability as a side effect of chunking rather than requiring a dedicated resumable-upload server.
 
-**Decision:** _[pending]_
+**Decision:** A (Presigned S3/MinIO Multipart Upload)
 
 ---
 
@@ -99,7 +99,7 @@ _Subprojects in scope:_
 
 **Recommendation:** **Option A (AWS SDK v3)** — Since the project explicitly frames MinIO as a stand-in for production S3, using AWS's own SDK removes migration risk entirely, and its documented multipart commands are exactly the primitives TD-02's client-driven presigned flow needs.
 
-**Decision:** _[pending]_
+**Decision:** A: AWS SDK v3 (`@aws-sdk/client-s3` + `@aws-sdk/s3-request-presigner` + `@aws-sdk/lib-storage`)
 
 ---
 
@@ -125,7 +125,7 @@ _Subprojects in scope:_
 
 **Recommendation:** **Option A (single bucket, `videos/{videoId}/...` prefixes)** — Minimizes MinIO bootstrap for this phase and groups a video's assets under one prefix; Option B's access-policy benefit is not needed until Phase 04 introduces public visibility, and can be adopted later via bucket policy changes without a key-layout migration.
 
-**Decision:** _[pending]_
+**Decision:** A (single bucket, `videos/{videoId}/...
 
 ---
 
@@ -156,7 +156,7 @@ _Subprojects in scope:_
 
 **Recommendation:** **Option A (NestJS Standalone Application Context)** — The only option consistent with the already-decided separate-container architecture while maximizing code reuse; `NestFactory.createApplicationContext` is an official, documented technique for non-HTTP entrypoints sharing a Nest codebase.
 
-**Decision:** _[pending]_
+**Decision:** A: NestJS Standalone Application Context (separate entrypoint, same codebase)
 
 ---
 
@@ -182,7 +182,7 @@ _Subprojects in scope:_
 
 **Recommendation:** **Option A (`fluent-ffmpeg`)** — It covers both capabilities (`ffprobe` for metadata, `.screenshots()` for thumbnail) with less custom code; the `ffmpeg`/`ffprobe` binary dependency in the worker's Docker image is unavoidable either way, so the wrapper only removes CLI-argument/parsing burden, at no real cost.
 
-**Decision:** _[pending]_
+**Decision:** A: `fluent-ffmpeg` wrapper library
 
 ---
 
@@ -213,7 +213,7 @@ _Subprojects in scope:_
 
 **Recommendation:** **Option C (`nanoid` public slug + UUID primary key)** — It is the only option that satisfies the literal short-URL requirement from `docs/project-plan.md`; UUID v4/v7 both remain 36 characters regardless of ordering. The dual-identifier pattern (internal PK vs. public-facing slug) is a small, well-precedented addition that leaves the existing UUID-PK convention untouched.
 
-**Decision:** _[pending]_
+**Decision:** C: Short opaque ID via `nanoid` (as a dedicated public slug, alongside a UUID primary key)
 
 ---
 
@@ -239,7 +239,7 @@ _Subprojects in scope:_
 
 **Recommendation:** **Option A (Presigned GET URL, direct-to-storage)** — It is the direct continuation of TD-02's non-blocking principle applied to reads, and it is literally what the C4 diagram already specifies; Option B would contradict an already-decided diagram relationship rather than propose a genuinely open alternative.
 
-**Decision:** _[pending]_
+**Decision:** A: Presigned GET URL, direct-to-storage
 
 ---
 
@@ -270,7 +270,7 @@ _Subprojects in scope:_
 
 **Recommendation:** **Option B** — It answers the "what happens on processing failure" question from the challenge with a concrete, low-cost mechanism (persisted `processing_error` + queue-native retries), without building a manual-retry API surface that belongs to a later phase's video-management scope.
 
-**Decision:** _[pending]_
+**Decision:** B: Same 4 states + persisted failure reason + queue-native retries
 
 ---
 
