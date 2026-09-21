@@ -3,7 +3,7 @@ kind: phase
 name: phase-03-videos
 sources_mtime:
   docs/project-plan.md: "2026-09-21T09:04:47-03:00"
-  docs/decisions/technical-decisions-phase-03-videos.md: "2026-09-21T19:32:58-03:00"
+  docs/decisions/technical-decisions-phase-03-videos.md: "2026-09-21T20:53:28-03:00"
   docs/decisions/technical-decisions-openapi-docs-nestjs.md: "2026-09-21T09:04:47-03:00"
   docs/phases/phase-01-configuracao-base/context.md: "2026-09-21T09:04:47-03:00"
   docs/phases/phase-02-auth/context.md: "2026-09-21T09:04:47-03:00"
@@ -61,18 +61,24 @@ Upload de arquivos grandes sem travar o sistema, processamento automático do v�
 
 | Ref | Source | Scope | Topic | Status | Decision | Libraries |
 |-----|--------|-------|-------|--------|----------|-----------|
-| phase-03-videos/TD-01 | phase | Backend | Message Queue Technology | decided | A: BullMQ + Redis (`@nestjs/bullmq`) | — |
+| phase-03-videos/TD-01 | phase | Backend | Message Queue Technology | decided | A: BullMQ + Redis (`@nestjs/bullmq`) | @nestjs/bullmq, bullmq |
 | phase-03-videos/TD-02 | phase | Cross-layer | Upload Protocol for Files up to 10GB | decided | A: Presigned S3/MinIO Multipart Upload (client-driven) | — |
-| phase-03-videos/TD-03 | phase | Backend | S3/MinIO Client Library | decided | A: AWS SDK v3 (`@aws-sdk/client-s3` + `@aws-sdk/s3-request-presigner` + `@aws-sdk/lib-storage`) | — |
+| phase-03-videos/TD-03 | phase | Backend | S3/MinIO Client Library | decided | A: AWS SDK v3 (`@aws-sdk/client-s3` + `@aws-sdk/s3-request-presigner` + `@aws-sdk/lib-storage`) | @aws-sdk/client-s3, @aws-sdk/s3-request-presigner, @aws-sdk/lib-storage |
+|     └─ Last revision: 2026-09-21 — Storage integration and e2e tests run against the real MinIO contai… | | | | | | |
 | phase-03-videos/TD-04 | phase | Backend | Storage Key & Bucket Organization | decided | A: Single bucket, type-prefixed keys | — |
 | phase-03-videos/TD-05 | phase | Backend | Worker Application Architecture | decided | A: NestJS Standalone Application Context (separate entrypoint, same codebase) | — |
-| phase-03-videos/TD-06 | phase | Backend | Video Processing — FFmpeg/ffprobe Integration | decided | A: `fluent-ffmpeg` wrapper library | — |
-| phase-03-videos/TD-07 | phase | Cross-layer | Unique Video URL Identifier Strategy | decided | C: Short opaque ID via `nanoid` (as a dedicated public slug, alongside a UUID primary key) | — |
+| phase-03-videos/TD-06 | phase | Backend | Video Processing — FFmpeg/ffprobe Integration | decided | B: Direct child_process spawn of ffmpeg/ffprobe | — |
+|     └─ Last revision: 2026-09-21 — Persisted metadata: typed columns `duration_seconds`, `width`, `hei… | | | | | | |
+| phase-03-videos/TD-07 | phase | Cross-layer | Unique Video URL Identifier Strategy | decided | C: Short opaque ID via `nanoid` (as a dedicated public slug, alongside a UUID primary key) | nanoid |
 | phase-03-videos/TD-08 | phase | Cross-layer | Video Delivery Strategy (Streaming & Download) | decided | A: Presigned GET URL, direct-to-storage | — |
+|     └─ Last revision: 2026-09-21 — Phase 03 access rule: only the authenticated owner of the video's c… | | | | | | |
 | phase-03-videos/TD-09 | phase | Cross-layer | Video Status Lifecycle & Processing Failure Policy | decided | B: Same 4 states + persisted failure reason + queue-native retries | — |
+|     └─ Last revision: 2026-09-21 — `draft → processing` happens when the API completes the multipart u… | | | | | | |
 | phase-03-videos/TD-10 | phase | Cross-layer | Storage Endpoint Configuration for Presigned URLs | decided | A: Two endpoints — internal for server operations, public for presigning | — |
 | phase-03-videos/TD-11 | phase | Cross-layer | Upload Acceptance Policy (Size Enforcement, Formats, Part Size) | decided | B: Declared at initiation + verified after completion | — |
+|     └─ Last revision: 2026-09-21 — When the post-completion `HeadObject` check rejects an upload (size… | | | | | | |
 | phase-03-videos/TD-12 | phase | Backend | Abandoned Upload Cleanup | decided | A: Scheduled sweep via a BullMQ job scheduler in the worker | — |
+|     └─ Last revision: 2026-09-21 — Abandonment TTL: 24h — drafts whose upload started more than 24h ag… | | | | | | |
 
 _Source files:_
 
@@ -97,7 +103,7 @@ _Source files:_
 ### phase-03-videos/TD-01
 
 **Recommendation:** The phase brief explicitly frames the queue as the "principal decisão de stack da fase" expecting dedicated infrastructure, not a workaround to avoid it. BullMQ's native `attempts`/`backoff`/`failed`-event API maps directly onto TD-09's failure-handling requirement with the least custom code, and `@nestjs/bullmq` is an officially maintained package confirmed compatible with the installed NestJS 11.
-**Libraries:** —
+**Libraries:** @nestjs/bullmq, bullmq
 
 ### phase-03-videos/TD-02
 
@@ -107,7 +113,10 @@ _Source files:_
 ### phase-03-videos/TD-03
 
 **Recommendation:** Since the project explicitly frames MinIO as a stand-in for production S3, using AWS's own SDK removes migration risk entirely, and its documented multipart commands are exactly the primitives TD-02's client-driven presigned flow needs.
-**Libraries:** —
+**Libraries:** @aws-sdk/client-s3, @aws-sdk/s3-request-presigner, @aws-sdk/lib-storage
+
+**Revisions:**
+- 2026-09-21 — Storage integration and e2e tests run against the real MinIO container in Compose — no local-filesystem adapter; unit tests mock the storage service at the module boundary. `.claude/skills/testing-guide-nestjs-project/references/external-systems.md` is updated during implementation to match. Rationale: IC-1 — presigned multipart, `HeadObject`, `AbortMultipartUpload` and ranged presigned GETs cannot be exercised by a local adapter; aligns with PostgreSQL/Mailpit already being tested for real.
 
 ### phase-03-videos/TD-04
 
@@ -122,22 +131,33 @@ _Source files:_
 ### phase-03-videos/TD-06
 
 **Recommendation:** It covers both capabilities (`ffprobe` for metadata, `.screenshots()` for thumbnail) with less custom code; the `ffmpeg`/`ffprobe` binary dependency in the worker's Docker image is unavoidable either way, so the wrapper only removes CLI-argument/parsing burden, at no real cost.
+
+**Note:** Decision changed from A (`fluent-ffmpeg`) to B during `/plan-resolve` (2026-09-21) and deliberately diverges from the Recommendation. The official `fluent-ffmpeg` README (via Context7, `/fluent-ffmpeg/node-fluent-ffmpeg`) states the library "is no longer maintained and no longer works properly with recent ffmpeg versions", and npm marks 2.1.3 deprecated; the worker image installs a current `ffmpeg` from apt, so Option A's main premise no longer holds. The alternatives Context7 surfaced were rejected: the `thedave42` fork installs as the same deprecated `fluent-ffmpeg` package, and `ffmpeg-kit` (`@ffmpeg-sdk/core`) is ESM-only at 0.1.0, which the CommonJS + Jest/ts-jest backend cannot load. The worker runs `ffprobe -v error -print_format json -show_format -show_streams <file>` for metadata and `ffmpeg -ss <t> -i <file> -frames:v 1 <thumb>` for the thumbnail, behind its own service so callers never see the CLI.
 **Libraries:** —
+
+**Revisions:**
+- 2026-09-21 — Persisted metadata: typed columns `duration_seconds`, `width`, `height`, `size_bytes`, `mime_type`; a `jsonb` `metadata` column holds the remaining ffprobe fields (video/audio codecs, bitrate, container format, frame rate). Rationale: AMB-2 — typed columns for fields later phases list or filter on, jsonb for descriptive fields that would otherwise churn the schema.
 
 ### phase-03-videos/TD-07
 
 **Recommendation:** It is the only option that satisfies the literal short-URL requirement from `docs/project-plan.md`; UUID v4/v7 both remain 36 characters regardless of ordering. The dual-identifier pattern (internal PK vs. public-facing slug) is a small, well-precedented addition that leaves the existing UUID-PK convention untouched.
-**Libraries:** —
+**Libraries:** nanoid
 
 ### phase-03-videos/TD-08
 
 **Recommendation:** It is the direct continuation of TD-02's non-blocking principle applied to reads, and it is literally what the C4 diagram already specifies; Option B would contradict an already-decided diagram relationship rather than propose a genuinely open alternative.
 **Libraries:** —
 
+**Revisions:**
+- 2026-09-21 — Phase 03 access rule: only the authenticated owner of the video's channel obtains streaming/download URLs; requesting URLs for a video whose status is not `ready` returns a domain error (HTTP 409). Wider access is left to later phases. Rationale: AMB-1 — video visibility (public/unlisted) belongs to Phase 04 and anonymous viewing to Phase 05.
+
 ### phase-03-videos/TD-09
 
 **Recommendation:** It answers the "what happens on processing failure" question from the challenge with a concrete, low-cost mechanism (persisted `processing_error` + queue-native retries), without building a manual-retry API surface that belongs to a later phase's video-management scope.
 **Libraries:** —
+
+**Revisions:**
+- 2026-09-21 — `draft → processing` happens when the API completes the multipart upload: it sets `status = processing` and enqueues the processing job with `jobId` = video id in the same flow; a repeated "complete upload" call on a non-`draft` video returns a domain error (HTTP 409), and the deterministic job id prevents duplicate jobs. Queue retries: `attempts: 3`, exponential backoff starting at 5s; `status = error` + `processing_error` are written when the last attempt fails. Rationale: AMB-3 (i)–(iii) — status reflects "upload done, processing pending" immediately, and idempotency relies on the queue's job id rather than extra locking.
 
 ### phase-03-videos/TD-10
 
@@ -149,10 +169,16 @@ _Source files:_
 **Recommendation:** It turns the 10GB limit and the format allowlist into enforced rules using `HeadObject` and ffprobe, which the stack already needs, without depending on unverified MinIO signature behavior (Option C) or trusting the client (Option A). Proposed parameters: allowlist `video/mp4` and `video/webm` (browser-playable without transcoding, which TD-08's direct streaming requires); server-fixed part size of 100 MiB (≈103 parts for 10GB, well inside the 10000-part limit), returned to the client in the initiation response.
 **Libraries:** —
 
+**Revisions:**
+- 2026-09-21 — When the post-completion `HeadObject` check rejects an upload (size > 10GB or different from the declared size), the object is deleted, the video moves to `status = error` with `processing_error` recording the rejection, and the API responds HTTP 422 with a domain error code. Rationale: AMB-3 (iv) — keeps TD-09's four states as the single lifecycle and preserves an audit trail of the failed attempt.
+
 ### phase-03-videos/TD-12
 
 **Recommendation:** It is the only option that works identically on the local MinIO stack and on S3 while cleaning both storage and the draft rows, and it adds no infrastructure beyond TD-01/TD-05. MinIO's own server-side expiry of stale uploads was not confirmed in the sources consulted, so it is not relied on. Option D is the fallback if the team prefers not to add scope to this phase.
 **Libraries:** —
+
+**Revisions:**
+- 2026-09-21 — Abandonment TTL: 24h — drafts whose upload started more than 24h ago and never completed are swept; the job scheduler runs hourly. Rationale: AMB-3 (v) — covers slow 10GB uploads that resume by requesting fresh part URLs after the ~1h part-URL expiry (TD-10).
 
 ## Inherited Decisions Detail
 

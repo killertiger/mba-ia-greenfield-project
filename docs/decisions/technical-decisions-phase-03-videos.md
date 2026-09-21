@@ -43,6 +43,7 @@ _Subprojects in scope:_
 **Recommendation:** **Option A (BullMQ + Redis)** — The phase brief explicitly frames the queue as the "principal decisão de stack da fase" expecting dedicated infrastructure, not a workaround to avoid it. BullMQ's native `attempts`/`backoff`/`failed`-event API maps directly onto TD-09's failure-handling requirement with the least custom code, and `@nestjs/bullmq` is an officially maintained package confirmed compatible with the installed NestJS 11.
 
 **Decision:** A: BullMQ + Redis (`@nestjs/bullmq`)
+**Libraries:** @nestjs/bullmq, bullmq
 
 ---
 
@@ -100,6 +101,10 @@ _Subprojects in scope:_
 **Recommendation:** **Option A (AWS SDK v3)** — Since the project explicitly frames MinIO as a stand-in for production S3, using AWS's own SDK removes migration risk entirely, and its documented multipart commands are exactly the primitives TD-02's client-driven presigned flow needs.
 
 **Decision:** A: AWS SDK v3 (`@aws-sdk/client-s3` + `@aws-sdk/s3-request-presigner` + `@aws-sdk/lib-storage`)
+**Libraries:** @aws-sdk/client-s3, @aws-sdk/s3-request-presigner, @aws-sdk/lib-storage
+
+**Revisions:**
+- 2026-09-21 — Storage integration and e2e tests run against the real MinIO container in Compose — no local-filesystem adapter; unit tests mock the storage service at the module boundary. `.claude/skills/testing-guide-nestjs-project/references/external-systems.md` is updated during implementation to match. Rationale: IC-1 — presigned multipart, `HeadObject`, `AbortMultipartUpload` and ranged presigned GETs cannot be exercised by a local adapter; aligns with PostgreSQL/Mailpit already being tested for real.
 
 ---
 
@@ -182,7 +187,12 @@ _Subprojects in scope:_
 
 **Recommendation:** **Option A (`fluent-ffmpeg`)** — It covers both capabilities (`ffprobe` for metadata, `.screenshots()` for thumbnail) with less custom code; the `ffmpeg`/`ffprobe` binary dependency in the worker's Docker image is unavoidable either way, so the wrapper only removes CLI-argument/parsing burden, at no real cost.
 
-**Decision:** A: `fluent-ffmpeg` wrapper library
+**Decision:** B: Direct child_process spawn of ffmpeg/ffprobe
+
+**Note:** Decision changed from A (`fluent-ffmpeg`) to B during `/plan-resolve` (2026-09-21) and deliberately diverges from the Recommendation. The official `fluent-ffmpeg` README (via Context7, `/fluent-ffmpeg/node-fluent-ffmpeg`) states the library "is no longer maintained and no longer works properly with recent ffmpeg versions", and npm marks 2.1.3 deprecated; the worker image installs a current `ffmpeg` from apt, so Option A's main premise no longer holds. The alternatives Context7 surfaced were rejected: the `thedave42` fork installs as the same deprecated `fluent-ffmpeg` package, and `ffmpeg-kit` (`@ffmpeg-sdk/core`) is ESM-only at 0.1.0, which the CommonJS + Jest/ts-jest backend cannot load. The worker runs `ffprobe -v error -print_format json -show_format -show_streams <file>` for metadata and `ffmpeg -ss <t> -i <file> -frames:v 1 <thumb>` for the thumbnail, behind its own service so callers never see the CLI.
+
+**Revisions:**
+- 2026-09-21 — Persisted metadata: typed columns `duration_seconds`, `width`, `height`, `size_bytes`, `mime_type`; a `jsonb` `metadata` column holds the remaining ffprobe fields (video/audio codecs, bitrate, container format, frame rate). Rationale: AMB-2 — typed columns for fields later phases list or filter on, jsonb for descriptive fields that would otherwise churn the schema.
 
 ---
 
@@ -214,6 +224,7 @@ _Subprojects in scope:_
 **Recommendation:** **Option C (`nanoid` public slug + UUID primary key)** — It is the only option that satisfies the literal short-URL requirement from `docs/project-plan.md`; UUID v4/v7 both remain 36 characters regardless of ordering. The dual-identifier pattern (internal PK vs. public-facing slug) is a small, well-precedented addition that leaves the existing UUID-PK convention untouched.
 
 **Decision:** C: Short opaque ID via `nanoid` (as a dedicated public slug, alongside a UUID primary key)
+**Libraries:** nanoid
 
 ---
 
@@ -240,6 +251,9 @@ _Subprojects in scope:_
 **Recommendation:** **Option A (Presigned GET URL, direct-to-storage)** — It is the direct continuation of TD-02's non-blocking principle applied to reads, and it is literally what the C4 diagram already specifies; Option B would contradict an already-decided diagram relationship rather than propose a genuinely open alternative.
 
 **Decision:** A: Presigned GET URL, direct-to-storage
+
+**Revisions:**
+- 2026-09-21 — Phase 03 access rule: only the authenticated owner of the video's channel obtains streaming/download URLs; requesting URLs for a video whose status is not `ready` returns a domain error (HTTP 409). Wider access is left to later phases. Rationale: AMB-1 — video visibility (public/unlisted) belongs to Phase 04 and anonymous viewing to Phase 05.
 
 ---
 
@@ -271,6 +285,9 @@ _Subprojects in scope:_
 **Recommendation:** **Option B** — It answers the "what happens on processing failure" question from the challenge with a concrete, low-cost mechanism (persisted `processing_error` + queue-native retries), without building a manual-retry API surface that belongs to a later phase's video-management scope.
 
 **Decision:** B: Same 4 states + persisted failure reason + queue-native retries
+
+**Revisions:**
+- 2026-09-21 — `draft → processing` happens when the API completes the multipart upload: it sets `status = processing` and enqueues the processing job with `jobId` = video id in the same flow; a repeated "complete upload" call on a non-`draft` video returns a domain error (HTTP 409), and the deterministic job id prevents duplicate jobs. Queue retries: `attempts: 3`, exponential backoff starting at 5s; `status = error` + `processing_error` are written when the last attempt fails. Rationale: AMB-3 (i)–(iii) — status reflects "upload done, processing pending" immediately, and idempotency relies on the queue's job id rather than extra locking.
 
 ---
 
@@ -334,6 +351,9 @@ _Subprojects in scope:_
 
 **Decision:** B: Declared at initiation + verified after completion
 
+**Revisions:**
+- 2026-09-21 — When the post-completion `HeadObject` check rejects an upload (size > 10GB or different from the declared size), the object is deleted, the video moves to `status = error` with `processing_error` recording the rejection, and the API responds HTTP 422 with a domain error code. Rationale: AMB-3 (iv) — keeps TD-09's four states as the single lifecycle and preserves an audit trail of the failed attempt.
+
 ---
 
 ## TD-12: Abandoned Upload Cleanup
@@ -370,6 +390,9 @@ _Subprojects in scope:_
 
 **Decision:** A: Scheduled sweep via a BullMQ job scheduler in the worker
 
+**Revisions:**
+- 2026-09-21 — Abandonment TTL: 24h — drafts whose upload started more than 24h ago and never completed are swept; the job scheduler runs hourly. Rationale: AMB-3 (v) — covers slow 10GB uploads that resume by requesting fresh part URLs after the ~1h part-URL expiry (TD-10).
+
 ---
 
 ## Decisions Summary
@@ -381,7 +404,7 @@ _Subprojects in scope:_
 | TD-03 | Backend | S3/MinIO Client Library | AWS SDK v3 | A: AWS SDK v3 (`@aws-sdk/client-s3` + `@aws-sdk/s3-request-presigner` + `@aws-sdk/lib-storage`) |
 | TD-04 | Backend | Storage Key & Bucket Organization | Single bucket, type-prefixed keys | A: Single bucket, type-prefixed keys |
 | TD-05 | Backend | Worker Application Architecture | NestJS Standalone Application Context | A: NestJS Standalone Application Context (separate entrypoint, same codebase) |
-| TD-06 | Backend | Video Processing — FFmpeg/ffprobe Integration | `fluent-ffmpeg` | A: `fluent-ffmpeg` wrapper library |
+| TD-06 | Backend | Video Processing — FFmpeg/ffprobe Integration | `fluent-ffmpeg` | B: Direct child_process spawn of ffmpeg/ffprobe |
 | TD-07 | Cross-layer | Unique Video URL Identifier Strategy | `nanoid` public slug + UUID PK | C: Short opaque ID via `nanoid` (as a dedicated public slug, alongside a UUID primary key) |
 | TD-08 | Cross-layer | Video Delivery Strategy (Streaming & Download) | Presigned GET URL, direct-to-storage | A: Presigned GET URL, direct-to-storage |
 | TD-09 | Cross-layer | Video Status Lifecycle & Processing Failure Policy | 4 states + persisted failure reason + queue-native retries | B: Same 4 states + persisted failure reason + queue-native retries |
