@@ -42,7 +42,7 @@ _Subprojects in scope:_
 
 **Recommendation:** **Option A (BullMQ + Redis)** — The phase brief explicitly frames the queue as the "principal decisão de stack da fase" expecting dedicated infrastructure, not a workaround to avoid it. BullMQ's native `attempts`/`backoff`/`failed`-event API maps directly onto TD-09's failure-handling requirement with the least custom code, and `@nestjs/bullmq` is an officially maintained package confirmed compatible with the installed NestJS 11.
 
-**Decision:** A (BullMQ + Redis)
+**Decision:** A: BullMQ + Redis (`@nestjs/bullmq`)
 
 ---
 
@@ -73,7 +73,7 @@ _Subprojects in scope:_
 
 **Recommendation:** **Option A (Presigned S3/MinIO Multipart Upload)** — It is the only option that fully removes file bytes from the API's path while adding no new infrastructure beyond the already-mandated MinIO, and it gives resumability as a side effect of chunking rather than requiring a dedicated resumable-upload server.
 
-**Decision:** A (Presigned S3/MinIO Multipart Upload)
+**Decision:** A: Presigned S3/MinIO Multipart Upload (client-driven)
 
 ---
 
@@ -125,7 +125,7 @@ _Subprojects in scope:_
 
 **Recommendation:** **Option A (single bucket, `videos/{videoId}/...` prefixes)** — Minimizes MinIO bootstrap for this phase and groups a video's assets under one prefix; Option B's access-policy benefit is not needed until Phase 04 introduces public visibility, and can be adopted later via bucket policy changes without a key-layout migration.
 
-**Decision:** A (single bucket, `videos/{videoId}/...
+**Decision:** A: Single bucket, type-prefixed keys
 
 ---
 
