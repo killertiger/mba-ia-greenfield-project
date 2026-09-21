@@ -274,16 +274,117 @@ _Subprojects in scope:_
 
 ---
 
+## TD-10: Storage Endpoint Configuration for Presigned URLs
+
+**Scope:** Cross-layer
+
+**Capability:** Transversal — covers: "Upload de vídeos com suporte a arquivos de até 10GB sem impacto na performance", "Reprodução via streaming (sem necessidade de download completo)", "Download do vídeo pelo usuário"
+
+**Context:** TD-02 (presigned multipart upload) and TD-08 (presigned GET for streaming/download) both require the client to call the object store directly. SigV4 presigned URLs embed and sign the host they were generated for, so the host must be the one the client actually reaches. Inside Compose the API and worker must reach MinIO by service name (`minio`), per the project's Docker networking rule — but `http://minio:9000` is not resolvable from a browser or host tool. This decision fixes how the internal and client-facing endpoints are configured, which spans the env schema (Joi), `compose.yaml`, `.env.example`, the S3 client provider and the tests. It also fixes presigned URL lifetimes, which the upload client and player depend on.
+
+**Options:**
+
+### Option A: Two endpoints — internal for server operations, public for presigning
+- Two env keys (e.g. `S3_ENDPOINT=http://minio:9000`, `S3_PUBLIC_ENDPOINT=http://localhost:9000`). Server-side commands (`CreateMultipartUpload`, `CompleteMultipartUpload`, `HeadObject`, worker reads/writes) use a client bound to the internal endpoint; a second `S3Client` bound to the public endpoint is used only for `getSignedUrl`, which computes signatures locally without a network call. In tests that run inside the container, the public endpoint is set equal to the internal one so the test itself can PUT/GET the presigned URLs.
+- **Pros:** Honors the service-name rule for every container-to-container call; the public host is pure configuration, so production swaps it for the S3/CDN host with no code change; no new service.
+- **Cons:** Two endpoint values to keep coherent per environment; a misconfigured public endpoint yields `SignatureDoesNotMatch`/unreachable URLs only at runtime (mitigated by an e2e test that follows a presigned URL).
+
+### Option B: Single endpoint hostname reachable from both sides
+- One `S3_ENDPOINT` used everywhere (e.g. `http://minio:9000`), made resolvable on the host via `/etc/hosts` or `host.docker.internal`-style aliases.
+- **Pros:** One S3 client, one config value.
+- **Cons:** Requires per-machine, OS-dependent host configuration outside the repo — not reproducible by `docker compose up` alone; breaks for any client the team does not control.
+
+### Option C: Reverse proxy service with a stable public origin
+- Add a proxy container (e.g. nginx) in Compose exposing one public origin that forwards to MinIO, preserving the `Host` header so signatures validate; the SDK presigns against the proxy origin.
+- **Pros:** Production-like single origin; could also front the API later.
+- **Cons:** New infrastructure service and config for a problem Option A solves with one env key; `Host`-header preservation is an extra, easy-to-break signature dependency.
+
+**Recommendation:** **Option A (Two endpoints)** — It keeps every container-to-container call on the Compose service name as the project rule requires, while making the client-facing host explicit configuration that maps directly to S3/CDN in production. Proposed lifetimes: upload part URLs short-lived (e.g. 1h — a client resuming after expiry requests fresh URLs for the remaining parts), GET URLs longer (e.g. 4h, covering a long viewing session per TD-08), both as env-configurable values validated by Joi.
+
+**Decision:** A: Two endpoints — internal for server operations, public for presigning
+
+---
+
+## TD-11: Upload Acceptance Policy (Size Enforcement, Formats, Part Size)
+
+**Scope:** Cross-layer
+
+**Capability:** Transversal — covers: "Upload de vídeos com suporte a arquivos de até 10GB sem impacto na performance", "Pré-cadastro automático do vídeo como rascunho ao iniciar o upload", "Reprodução via streaming (sem necessidade de download completo)"
+
+**Context:** Under TD-02 the client sends bytes straight to storage, so the API cannot count bytes as they arrive. The 10GB ceiling, the accepted formats and the part size must be enforced through the initiation request, storage-side checks, and the worker. Formats matter for streaming: TD-08 serves the original file directly (no transcoding step exists in this phase's capabilities), so only containers/codecs browsers play natively stream correctly. Part size is a client↔API contract: it decides how many presigned part URLs the API issues and how the client splits the file (S3 multipart rules: part numbers 1–10000, minimum 5 MiB per part except the last).
+
+**Options:**
+
+### Option A: Declared metadata validated at initiation only
+- The client declares file size and MIME type when starting the upload (the same request that pre-registers the draft). The API rejects `size > 10GB` or a MIME outside the allowlist, then issues part URLs for a server-fixed part size. No check after completion.
+- **Pros:** Simplest; a single validation point; no extra storage calls.
+- **Cons:** Advisory only — a client can upload more bytes, or a different format, than declared, and nothing catches it before processing.
+
+### Option B: Declared at initiation + verified after completion
+- As Option A, plus two post-upload checks: on "complete upload" the API calls `HeadObject` and rejects (and deletes the object) when `ContentLength` exceeds 10GB or differs from the declared size; the worker's `ffprobe` (TD-06) confirms the real container/codec is in the allowlist, otherwise the video goes to `error` with `processing_error` set (TD-09).
+- **Pros:** The limit and format are actually enforced, using only primitives already in the stack (AWS SDK `HeadObject`, ffprobe); failure paths reuse TD-09's `error` state.
+- **Cons:** Oversized or invalid bytes land in storage briefly before being rejected and deleted; two validation points to test.
+
+### Option C: Option B + storage-enforced part sizes
+- As Option B, plus each `UploadPart` URL is presigned with a signed `content-length` (via `getSignedUrl`'s `signableHeaders` option, documented in `@aws-sdk/s3-request-presigner`), so storage rejects any part that is not exactly the expected size. The total can therefore never exceed parts × part size.
+- **Pros:** Excess bytes never reach storage.
+- **Cons:** The client can no longer choose its chunking, and the last part's exact length must be computed per upload; MinIO's handling of a signed `content-length` on presigned `UploadPart` is not documented in the sources consulted and would need verification; the most complex of the three.
+
+**Recommendation:** **Option B** — It turns the 10GB limit and the format allowlist into enforced rules using `HeadObject` and ffprobe, which the stack already needs, without depending on unverified MinIO signature behavior (Option C) or trusting the client (Option A). Proposed parameters: allowlist `video/mp4` and `video/webm` (browser-playable without transcoding, which TD-08's direct streaming requires); server-fixed part size of 100 MiB (≈103 parts for 10GB, well inside the 10000-part limit), returned to the client in the initiation response.
+
+**Decision:** B: Declared at initiation + verified after completion
+
+---
+
+## TD-12: Abandoned Upload Cleanup
+
+**Scope:** Backend
+
+**Capability:** Transversal — covers: "Pré-cadastro automático do vídeo como rascunho ao iniciar o upload", "Serviço de armazenamento de arquivos (vídeos e thumbnails)"
+
+**Context:** Pre-registering the draft when the upload starts (TD-02) creates a `draft` row and an open multipart upload before any bytes arrive. If the client never completes — closed tab, lost connection, crash — the uploaded parts keep occupying storage and the draft stays forever. `docs/project-plan.md`'s Pontos de Atenção asks to plan storage growth and cost from the start.
+
+**Options:**
+
+### Option A: Scheduled sweep via a BullMQ job scheduler in the worker
+- A repeatable job (BullMQ `upsertJobScheduler` with an `every` interval, confirmed in the BullMQ docs) runs in the worker (TD-05). It finds `draft` videos whose upload started more than N hours ago and was never completed, calls `AbortMultipartUpload` for each, and moves the row to `error` with `processing_error` recording the abandonment (reusing TD-09's states — no new status).
+- **Pros:** Behaves the same on MinIO and S3; cleans storage and database together; reuses infrastructure already decided (TD-01 queue, TD-05 worker).
+- **Cons:** One more scheduled job with its own tests; an abandonment TTL must be chosen (it must exceed the longest legitimate upload).
+
+### Option B: Storage-native lifecycle rule
+- Configure an `AbortIncompleteMultipartUpload` lifecycle rule on the bucket.
+- **Pros:** No application code.
+- **Cons:** MinIO's S3-compatibility docs state this lifecycle action is not supported with `PutBucketLifecycle`, so it would work on S3 but not on the local MinIO stack; it also never touches the orphan `draft` rows.
+
+### Option C: Client-initiated abort endpoint only
+- An endpoint the client calls to cancel an in-progress upload (aborts the multipart upload and removes/marks the draft).
+- **Pros:** Minimal and explicit.
+- **Cons:** Does not cover the main failure mode — clients that disappear without calling anything.
+
+### Option D: Accept as a known gap for this phase
+- Document that abandoned uploads are not cleaned yet and defer cleanup to Phase 04 (video management).
+- **Pros:** Adds no scope to Phase 03.
+- **Cons:** Orphan parts and drafts accumulate from the first day of use, contrary to the storage-cost attention note.
+
+**Recommendation:** **Option A (Scheduled sweep)** — It is the only option that works identically on the local MinIO stack and on S3 while cleaning both storage and the draft rows, and it adds no infrastructure beyond TD-01/TD-05. MinIO's own server-side expiry of stale uploads was not confirmed in the sources consulted, so it is not relied on. Option D is the fallback if the team prefers not to add scope to this phase.
+
+**Decision:** A: Scheduled sweep via a BullMQ job scheduler in the worker
+
+---
+
 ## Decisions Summary
 
 | ID | Scope | Decision | Recommendation | Choice |
 |----|-------|----------|---------------|--------|
-| TD-01 | Backend | Message Queue Technology | BullMQ + Redis | _[pending]_ |
-| TD-02 | Cross-layer | Upload Protocol for Files up to 10GB | Presigned S3/MinIO Multipart Upload | _[pending]_ |
-| TD-03 | Backend | S3/MinIO Client Library | AWS SDK v3 | _[pending]_ |
-| TD-04 | Backend | Storage Key & Bucket Organization | Single bucket, type-prefixed keys | _[pending]_ |
-| TD-05 | Backend | Worker Application Architecture | NestJS Standalone Application Context | _[pending]_ |
-| TD-06 | Backend | Video Processing — FFmpeg/ffprobe Integration | `fluent-ffmpeg` | _[pending]_ |
-| TD-07 | Cross-layer | Unique Video URL Identifier Strategy | `nanoid` public slug + UUID PK | _[pending]_ |
-| TD-08 | Cross-layer | Video Delivery Strategy (Streaming & Download) | Presigned GET URL, direct-to-storage | _[pending]_ |
-| TD-09 | Cross-layer | Video Status Lifecycle & Processing Failure Policy | 4 states + persisted failure reason + queue-native retries | _[pending]_ |
+| TD-01 | Backend | Message Queue Technology | BullMQ + Redis | A: BullMQ + Redis (`@nestjs/bullmq`) |
+| TD-02 | Cross-layer | Upload Protocol for Files up to 10GB | Presigned S3/MinIO Multipart Upload | A: Presigned S3/MinIO Multipart Upload (client-driven) |
+| TD-03 | Backend | S3/MinIO Client Library | AWS SDK v3 | A: AWS SDK v3 (`@aws-sdk/client-s3` + `@aws-sdk/s3-request-presigner` + `@aws-sdk/lib-storage`) |
+| TD-04 | Backend | Storage Key & Bucket Organization | Single bucket, type-prefixed keys | A: Single bucket, type-prefixed keys |
+| TD-05 | Backend | Worker Application Architecture | NestJS Standalone Application Context | A: NestJS Standalone Application Context (separate entrypoint, same codebase) |
+| TD-06 | Backend | Video Processing — FFmpeg/ffprobe Integration | `fluent-ffmpeg` | A: `fluent-ffmpeg` wrapper library |
+| TD-07 | Cross-layer | Unique Video URL Identifier Strategy | `nanoid` public slug + UUID PK | C: Short opaque ID via `nanoid` (as a dedicated public slug, alongside a UUID primary key) |
+| TD-08 | Cross-layer | Video Delivery Strategy (Streaming & Download) | Presigned GET URL, direct-to-storage | A: Presigned GET URL, direct-to-storage |
+| TD-09 | Cross-layer | Video Status Lifecycle & Processing Failure Policy | 4 states + persisted failure reason + queue-native retries | B: Same 4 states + persisted failure reason + queue-native retries |
+| TD-10 | Cross-layer | Storage Endpoint Configuration for Presigned URLs | Two endpoints (internal + public for presigning) | A: Two endpoints — internal for server operations, public for presigning |
+| TD-11 | Cross-layer | Upload Acceptance Policy (Size Enforcement, Formats, Part Size) | Declared at initiation + verified after completion | B: Declared at initiation + verified after completion |
+| TD-12 | Backend | Abandoned Upload Cleanup | Scheduled sweep via BullMQ job scheduler | A: Scheduled sweep via a BullMQ job scheduler in the worker |

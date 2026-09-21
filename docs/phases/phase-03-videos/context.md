@@ -3,7 +3,7 @@ kind: phase
 name: phase-03-videos
 sources_mtime:
   docs/project-plan.md: "2026-09-21T09:04:47-03:00"
-  docs/decisions/technical-decisions-phase-03-videos.md: "2026-09-21T09:45:06-03:00"
+  docs/decisions/technical-decisions-phase-03-videos.md: "2026-09-21T19:32:58-03:00"
   docs/decisions/technical-decisions-openapi-docs-nestjs.md: "2026-09-21T09:04:47-03:00"
   docs/phases/phase-01-configuracao-base/context.md: "2026-09-21T09:04:47-03:00"
   docs/phases/phase-02-auth/context.md: "2026-09-21T09:04:47-03:00"
@@ -70,6 +70,9 @@ Upload de arquivos grandes sem travar o sistema, processamento automático do v�
 | phase-03-videos/TD-07 | phase | Cross-layer | Unique Video URL Identifier Strategy | decided | C: Short opaque ID via `nanoid` (as a dedicated public slug, alongside a UUID primary key) | — |
 | phase-03-videos/TD-08 | phase | Cross-layer | Video Delivery Strategy (Streaming & Download) | decided | A: Presigned GET URL, direct-to-storage | — |
 | phase-03-videos/TD-09 | phase | Cross-layer | Video Status Lifecycle & Processing Failure Policy | decided | B: Same 4 states + persisted failure reason + queue-native retries | — |
+| phase-03-videos/TD-10 | phase | Cross-layer | Storage Endpoint Configuration for Presigned URLs | decided | A: Two endpoints — internal for server operations, public for presigning | — |
+| phase-03-videos/TD-11 | phase | Cross-layer | Upload Acceptance Policy (Size Enforcement, Formats, Part Size) | decided | B: Declared at initiation + verified after completion | — |
+| phase-03-videos/TD-12 | phase | Backend | Abandoned Upload Cleanup | decided | A: Scheduled sweep via a BullMQ job scheduler in the worker | — |
 
 _Source files:_
 
@@ -79,15 +82,15 @@ _Source files:_
 
 | Capability (from project-plan.md) | Covered by |
 |-----------------------------------|------------|
-| Serviço de armazenamento de arquivos (vídeos e thumbnails) | phase-03-videos/TD-03, phase-03-videos/TD-04 |
+| Serviço de armazenamento de arquivos (vídeos e thumbnails) | phase-03-videos/TD-03, phase-03-videos/TD-04, phase-03-videos/TD-12 |
 | Serviço de processamento em segundo plano (filas) | phase-03-videos/TD-01, phase-03-videos/TD-05 |
-| Upload de vídeos com suporte a arquivos de até 10GB sem impacto na performance | phase-03-videos/TD-02 |
-| Pré-cadastro automático do vídeo como rascunho ao iniciar o upload | phase-03-videos/TD-02, phase-03-videos/TD-09 |
+| Upload de vídeos com suporte a arquivos de até 10GB sem impacto na performance | phase-03-videos/TD-02, phase-03-videos/TD-10, phase-03-videos/TD-11 |
+| Pré-cadastro automático do vídeo como rascunho ao iniciar o upload | phase-03-videos/TD-02, phase-03-videos/TD-09, phase-03-videos/TD-11, phase-03-videos/TD-12 |
 | Processamento automático do vídeo após upload (extração de duração e metadados) | phase-03-videos/TD-05, phase-03-videos/TD-06, phase-03-videos/TD-09 |
 | Geração automática de thumbnail a partir de um frame do vídeo | phase-03-videos/TD-06 |
 | URL única por vídeo, sem conflito com outros vídeos | phase-03-videos/TD-04, phase-03-videos/TD-07 |
-| Reprodução via streaming (sem necessidade de download completo) | phase-03-videos/TD-08 |
-| Download do vídeo pelo usuário | phase-03-videos/TD-08 |
+| Reprodução via streaming (sem necessidade de download completo) | phase-03-videos/TD-08, phase-03-videos/TD-10, phase-03-videos/TD-11 |
+| Download do vídeo pelo usuário | phase-03-videos/TD-08, phase-03-videos/TD-10 |
 
 ## Decisions Detail
 
@@ -134,6 +137,21 @@ _Source files:_
 ### phase-03-videos/TD-09
 
 **Recommendation:** It answers the "what happens on processing failure" question from the challenge with a concrete, low-cost mechanism (persisted `processing_error` + queue-native retries), without building a manual-retry API surface that belongs to a later phase's video-management scope.
+**Libraries:** —
+
+### phase-03-videos/TD-10
+
+**Recommendation:** It keeps every container-to-container call on the Compose service name as the project rule requires, while making the client-facing host explicit configuration that maps directly to S3/CDN in production. Proposed lifetimes: upload part URLs short-lived (e.g. 1h — a client resuming after expiry requests fresh URLs for the remaining parts), GET URLs longer (e.g. 4h, covering a long viewing session per TD-08), both as env-configurable values validated by Joi.
+**Libraries:** —
+
+### phase-03-videos/TD-11
+
+**Recommendation:** It turns the 10GB limit and the format allowlist into enforced rules using `HeadObject` and ffprobe, which the stack already needs, without depending on unverified MinIO signature behavior (Option C) or trusting the client (Option A). Proposed parameters: allowlist `video/mp4` and `video/webm` (browser-playable without transcoding, which TD-08's direct streaming requires); server-fixed part size of 100 MiB (≈103 parts for 10GB, well inside the 10000-part limit), returned to the client in the initiation response.
+**Libraries:** —
+
+### phase-03-videos/TD-12
+
+**Recommendation:** It is the only option that works identically on the local MinIO stack and on S3 while cleaning both storage and the draft rows, and it adds no infrastructure beyond TD-01/TD-05. MinIO's own server-side expiry of stale uploads was not confirmed in the sources consulted, so it is not relied on. Option D is the fallback if the team prefers not to add scope to this phase.
 **Libraries:** —
 
 ## Inherited Decisions Detail
