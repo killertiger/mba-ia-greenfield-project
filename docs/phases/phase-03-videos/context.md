@@ -3,7 +3,7 @@ kind: phase
 name: phase-03-videos
 sources_mtime:
   docs/project-plan.md: "2026-09-21T09:04:47-03:00"
-  docs/decisions/technical-decisions-phase-03-videos.md: "2026-09-21T09:36:57-03:00"
+  docs/decisions/technical-decisions-phase-03-videos.md: "2026-09-21T09:45:06-03:00"
   docs/decisions/technical-decisions-openapi-docs-nestjs.md: "2026-09-21T09:04:47-03:00"
   docs/phases/phase-01-configuracao-base/context.md: "2026-09-21T09:04:47-03:00"
   docs/phases/phase-02-auth/context.md: "2026-09-21T09:04:47-03:00"
@@ -61,13 +61,13 @@ Upload de arquivos grandes sem travar o sistema, processamento automático do v�
 
 | Ref | Source | Scope | Topic | Status | Decision | Libraries |
 |-----|--------|-------|-------|--------|----------|-----------|
-| phase-03-videos/TD-01 | phase | Backend | Message Queue Technology | decided | A (BullMQ + Redis) | — |
-| phase-03-videos/TD-02 | phase | Cross-layer | Upload Protocol for Files up to 10GB | decided | A (Presigned S3/MinIO Multipart Upload) | — |
+| phase-03-videos/TD-01 | phase | Backend | Message Queue Technology | decided | A: BullMQ + Redis (`@nestjs/bullmq`) | — |
+| phase-03-videos/TD-02 | phase | Cross-layer | Upload Protocol for Files up to 10GB | decided | A: Presigned S3/MinIO Multipart Upload (client-driven) | — |
 | phase-03-videos/TD-03 | phase | Backend | S3/MinIO Client Library | decided | A: AWS SDK v3 (`@aws-sdk/client-s3` + `@aws-sdk/s3-request-presigner` + `@aws-sdk/lib-storage`) | — |
-| phase-03-videos/TD-04 | phase | Backend | Storage Key & Bucket Organization | decided | A (single bucket, `videos/{videoId}/... | — |
+| phase-03-videos/TD-04 | phase | Backend | Storage Key & Bucket Organization | decided | A: Single bucket, type-prefixed keys | — |
 | phase-03-videos/TD-05 | phase | Backend | Worker Application Architecture | decided | A: NestJS Standalone Application Context (separate entrypoint, same codebase) | — |
 | phase-03-videos/TD-06 | phase | Backend | Video Processing — FFmpeg/ffprobe Integration | decided | A: `fluent-ffmpeg` wrapper library | — |
-| phase-03-videos/TD-07 | phase | Cross-layer | Unique Video URL Identifier Strategy | decided | C: Short opaque ID via `nanoid` (dedicated public slug alongside a UUID primary key) | — |
+| phase-03-videos/TD-07 | phase | Cross-layer | Unique Video URL Identifier Strategy | decided | C: Short opaque ID via `nanoid` (as a dedicated public slug, alongside a UUID primary key) | — |
 | phase-03-videos/TD-08 | phase | Cross-layer | Video Delivery Strategy (Streaming & Download) | decided | A: Presigned GET URL, direct-to-storage | — |
 | phase-03-videos/TD-09 | phase | Cross-layer | Video Status Lifecycle & Processing Failure Policy | decided | B: Same 4 states + persisted failure reason + queue-native retries | — |
 
