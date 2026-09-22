@@ -4,8 +4,8 @@ name: phase-03-videos
 status: clean
 issue_count: 0
 sources_mtime:
-  docs/phases/phase-03-videos/context.md: "2026-09-21T20:53:42-03:00"
-  docs/decisions/technical-decisions-phase-03-videos.md: "2026-09-21T20:53:28-03:00"
+  docs/phases/phase-03-videos/context.md: "2026-09-21T21:02:47-03:00"
+  docs/decisions/technical-decisions-phase-03-videos.md: "2026-09-21T21:00:10-03:00"
 issues:
   - id: IC-1
     status: resolved

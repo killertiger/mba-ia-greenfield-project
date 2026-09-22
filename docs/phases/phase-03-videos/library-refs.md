@@ -25,7 +25,7 @@ libs:
     context7_id: "/ai/nanoid"
     fetched_at: "2026-09-21T20:54:08-03:00"
 sources_mtime:
-  docs/decisions/technical-decisions-phase-03-videos.md: "2026-09-21T20:53:28-03:00"
+  docs/decisions/technical-decisions-phase-03-videos.md: "2026-09-21T21:00:10-03:00"
 ---
 
 # Library References — Phase 03 (Upload e Processamento de Vídeos)

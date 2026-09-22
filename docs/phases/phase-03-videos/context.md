@@ -3,7 +3,7 @@ kind: phase
 name: phase-03-videos
 sources_mtime:
   docs/project-plan.md: "2026-09-21T09:04:47-03:00"
-  docs/decisions/technical-decisions-phase-03-videos.md: "2026-09-21T20:53:28-03:00"
+  docs/decisions/technical-decisions-phase-03-videos.md: "2026-09-21T21:00:10-03:00"
   docs/decisions/technical-decisions-openapi-docs-nestjs.md: "2026-09-21T09:04:47-03:00"
   docs/phases/phase-01-configuracao-base/context.md: "2026-09-21T09:04:47-03:00"
   docs/phases/phase-02-auth/context.md: "2026-09-21T09:04:47-03:00"
@@ -62,6 +62,7 @@ Upload de arquivos grandes sem travar o sistema, processamento automático do v�
 | Ref | Source | Scope | Topic | Status | Decision | Libraries |
 |-----|--------|-------|-------|--------|----------|-----------|
 | phase-03-videos/TD-01 | phase | Backend | Message Queue Technology | decided | A: BullMQ + Redis (`@nestjs/bullmq`) | @nestjs/bullmq, bullmq |
+|     └─ Last revision: 2026-09-21 — Version pin: `@nestjs/bullmq@^11.0.5` + `bullmq@^6.3.8`, not the `1… | | | | | | |
 | phase-03-videos/TD-02 | phase | Cross-layer | Upload Protocol for Files up to 10GB | decided | A: Presigned S3/MinIO Multipart Upload (client-driven) | — |
 | phase-03-videos/TD-03 | phase | Backend | S3/MinIO Client Library | decided | A: AWS SDK v3 (`@aws-sdk/client-s3` + `@aws-sdk/s3-request-presigner` + `@aws-sdk/lib-storage`) | @aws-sdk/client-s3, @aws-sdk/s3-request-presigner, @aws-sdk/lib-storage |
 |     └─ Last revision: 2026-09-21 — Storage integration and e2e tests run against the real MinIO contai… | | | | | | |
@@ -70,10 +71,11 @@ Upload de arquivos grandes sem travar o sistema, processamento automático do v�
 | phase-03-videos/TD-06 | phase | Backend | Video Processing — FFmpeg/ffprobe Integration | decided | B: Direct child_process spawn of ffmpeg/ffprobe | — |
 |     └─ Last revision: 2026-09-21 — Persisted metadata: typed columns `duration_seconds`, `width`, `hei… | | | | | | |
 | phase-03-videos/TD-07 | phase | Cross-layer | Unique Video URL Identifier Strategy | decided | C: Short opaque ID via `nanoid` (as a dedicated public slug, alongside a UUID primary key) | nanoid |
+|     └─ Last revision: 2026-09-21 — Version pin: `nanoid@^3.3.19`, not the `6.0.1` cited in Option C. C… | | | | | | |
 | phase-03-videos/TD-08 | phase | Cross-layer | Video Delivery Strategy (Streaming & Download) | decided | A: Presigned GET URL, direct-to-storage | — |
-|     └─ Last revision: 2026-09-21 — Phase 03 access rule: only the authenticated owner of the video's c… | | | | | | |
+|     └─ Last revision: 2026-09-21 — Evidence gap to close in implementation: Context7 (MinIO docs) list… | | | | | | |
 | phase-03-videos/TD-09 | phase | Cross-layer | Video Status Lifecycle & Processing Failure Policy | decided | B: Same 4 states + persisted failure reason + queue-native retries | — |
-|     └─ Last revision: 2026-09-21 — `draft → processing` happens when the API completes the multipart u… | | | | | | |
+|     └─ Last revision: 2026-09-21 — Correction: Option B's statement that BullMQ's `worker.on('failed',… | | | | | | |
 | phase-03-videos/TD-10 | phase | Cross-layer | Storage Endpoint Configuration for Presigned URLs | decided | A: Two endpoints — internal for server operations, public for presigning | — |
 | phase-03-videos/TD-11 | phase | Cross-layer | Upload Acceptance Policy (Size Enforcement, Formats, Part Size) | decided | B: Declared at initiation + verified after completion | — |
 |     └─ Last revision: 2026-09-21 — When the post-completion `HeadObject` check rejects an upload (size… | | | | | | |
@@ -104,6 +106,9 @@ _Source files:_
 
 **Recommendation:** The phase brief explicitly frames the queue as the "principal decisão de stack da fase" expecting dedicated infrastructure, not a workaround to avoid it. BullMQ's native `attempts`/`backoff`/`failed`-event API maps directly onto TD-09's failure-handling requirement with the least custom code, and `@nestjs/bullmq` is an officially maintained package confirmed compatible with the installed NestJS 11.
 **Libraries:** @nestjs/bullmq, bullmq
+
+**Revisions:**
+- 2026-09-21 — Version pin: `@nestjs/bullmq@^11.0.5` + `bullmq@^6.3.8`, not the `12.0.0` cited in Option A. `@nestjs/bullmq@12.0.0` is published as `"type": "module"` (ESM), which the CommonJS backend and its Jest/ts-jest runtime cannot `require()`; `11.0.5` is CommonJS and its peers accept `bullmq ^6` and `@nestjs/core ^11` (npm registry). Rationale: Context7/npm audit before `/plan-build` — the decision (Option A) is unchanged, only the version.
 
 ### phase-03-videos/TD-02
 
@@ -143,6 +148,9 @@ _Source files:_
 **Recommendation:** It is the only option that satisfies the literal short-URL requirement from `docs/project-plan.md`; UUID v4/v7 both remain 36 characters regardless of ordering. The dual-identifier pattern (internal PK vs. public-facing slug) is a small, well-precedented addition that leaves the existing UUID-PK convention untouched.
 **Libraries:** nanoid
 
+**Revisions:**
+- 2026-09-21 — Version pin: `nanoid@^3.3.19`, not the `6.0.1` cited in Option C. Context7 (`/ai/nanoid`) states v6 is ESM-only and `require('nanoid')` is not supported; `3.x` exposes a `require` export (`index.cjs`), which the CommonJS backend and Jest/ts-jest need. Use the secure default import (not `nanoid/non-secure`). Option B's premise also checked: Context7 (PostgreSQL docs) shows `uuidv7()` was added in PostgreSQL 18 — PostgreSQL 17 only has `uuid_extract_timestamp()`/`uuid_extract_version()`. Rationale: Context7/npm audit before `/plan-build`.
+
 ### phase-03-videos/TD-08
 
 **Recommendation:** It is the direct continuation of TD-02's non-blocking principle applied to reads, and it is literally what the C4 diagram already specifies; Option B would contradict an already-decided diagram relationship rather than propose a genuinely open alternative.
@@ -150,6 +158,7 @@ _Source files:_
 
 **Revisions:**
 - 2026-09-21 — Phase 03 access rule: only the authenticated owner of the video's channel obtains streaming/download URLs; requesting URLs for a video whose status is not `ready` returns a domain error (HTTP 409). Wider access is left to later phases. Rationale: AMB-1 — video visibility (public/unlisted) belongs to Phase 04 and anonymous viewing to Phase 05.
+- 2026-09-21 — Evidence gap to close in implementation: Context7 (MinIO docs) lists `GetObject` among the supported S3 APIs but the consulted pages do not show `Range`/`206 Partial Content` explicitly. Streaming via presigned GET must therefore be proven by an e2e test that requests the presigned URL with `Range: bytes=0-1023` and asserts HTTP 206 with the partial body. The chosen 4h GET lifetime (TD-10) is well inside the 7-day presigned-URL maximum (MinIO docs default: 168h). Rationale: Context7 audit before `/plan-build`.
 
 ### phase-03-videos/TD-09
 
@@ -158,6 +167,7 @@ _Source files:_
 
 **Revisions:**
 - 2026-09-21 — `draft → processing` happens when the API completes the multipart upload: it sets `status = processing` and enqueues the processing job with `jobId` = video id in the same flow; a repeated "complete upload" call on a non-`draft` video returns a domain error (HTTP 409), and the deterministic job id prevents duplicate jobs. Queue retries: `attempts: 3`, exponential backoff starting at 5s; `status = error` + `processing_error` are written when the last attempt fails. Rationale: AMB-3 (i)–(iii) — status reflects "upload done, processing pending" immediately, and idempotency relies on the queue's job id rather than extra locking.
+- 2026-09-21 — Correction: Option B's statement that BullMQ's `worker.on('failed', ...)` "fires exactly once all configured attempts are exhausted" is not supported by the sources. Context7 (BullMQ `src/classes/job.ts`) shows a failed attempt is retried while `attemptsMade + 1 < opts.attempts` and the error is not an `UnrecoverableError`, and `attemptsMade` is incremented after that decision. The `status = error` + `processing_error` write must be guarded by `job.attemptsMade >= job.opts.attempts`; non-retryable failures (e.g. a container/codec outside TD-11's allowlist) throw `UnrecoverableError` to skip the remaining attempts. Rationale: Context7 audit before `/plan-build` — the decision (Option B) is unchanged.
 
 ### phase-03-videos/TD-10
 

@@ -1,7 +1,7 @@
 ---
 scope_type: phase
 related_phases: [3]
-status: pending
+status: decided
 date: 2026-09-21
 scope_description: "Video upload (up to 10GB, non-blocking), background processing (metadata + thumbnail via FFmpeg), object storage (MinIO/S3) organization, message queue technology, unique video URLs, and streaming/download delivery for Phase 03."
 ---
@@ -44,6 +44,9 @@ _Subprojects in scope:_
 
 **Decision:** A: BullMQ + Redis (`@nestjs/bullmq`)
 **Libraries:** @nestjs/bullmq, bullmq
+
+**Revisions:**
+- 2026-09-21 — Version pin: `@nestjs/bullmq@^11.0.5` + `bullmq@^6.3.8`, not the `12.0.0` cited in Option A. `@nestjs/bullmq@12.0.0` is published as `"type": "module"` (ESM), which the CommonJS backend and its Jest/ts-jest runtime cannot `require()`; `11.0.5` is CommonJS and its peers accept `bullmq ^6` and `@nestjs/core ^11` (npm registry). Rationale: Context7/npm audit before `/plan-build` — the decision (Option A) is unchanged, only the version.
 
 ---
 
@@ -226,6 +229,9 @@ _Subprojects in scope:_
 **Decision:** C: Short opaque ID via `nanoid` (as a dedicated public slug, alongside a UUID primary key)
 **Libraries:** nanoid
 
+**Revisions:**
+- 2026-09-21 — Version pin: `nanoid@^3.3.19`, not the `6.0.1` cited in Option C. Context7 (`/ai/nanoid`) states v6 is ESM-only and `require('nanoid')` is not supported; `3.x` exposes a `require` export (`index.cjs`), which the CommonJS backend and Jest/ts-jest need. Use the secure default import (not `nanoid/non-secure`). Option B's premise also checked: Context7 (PostgreSQL docs) shows `uuidv7()` was added in PostgreSQL 18 — PostgreSQL 17 only has `uuid_extract_timestamp()`/`uuid_extract_version()`. Rationale: Context7/npm audit before `/plan-build`.
+
 ---
 
 ## TD-08: Video Delivery Strategy (Streaming & Download)
@@ -254,6 +260,7 @@ _Subprojects in scope:_
 
 **Revisions:**
 - 2026-09-21 — Phase 03 access rule: only the authenticated owner of the video's channel obtains streaming/download URLs; requesting URLs for a video whose status is not `ready` returns a domain error (HTTP 409). Wider access is left to later phases. Rationale: AMB-1 — video visibility (public/unlisted) belongs to Phase 04 and anonymous viewing to Phase 05.
+- 2026-09-21 — Evidence gap to close in implementation: Context7 (MinIO docs) lists `GetObject` among the supported S3 APIs but the consulted pages do not show `Range`/`206 Partial Content` explicitly. Streaming via presigned GET must therefore be proven by an e2e test that requests the presigned URL with `Range: bytes=0-1023` and asserts HTTP 206 with the partial body. The chosen 4h GET lifetime (TD-10) is well inside the 7-day presigned-URL maximum (MinIO docs default: 168h). Rationale: Context7 audit before `/plan-build`.
 
 ---
 
@@ -288,6 +295,7 @@ _Subprojects in scope:_
 
 **Revisions:**
 - 2026-09-21 — `draft → processing` happens when the API completes the multipart upload: it sets `status = processing` and enqueues the processing job with `jobId` = video id in the same flow; a repeated "complete upload" call on a non-`draft` video returns a domain error (HTTP 409), and the deterministic job id prevents duplicate jobs. Queue retries: `attempts: 3`, exponential backoff starting at 5s; `status = error` + `processing_error` are written when the last attempt fails. Rationale: AMB-3 (i)–(iii) — status reflects "upload done, processing pending" immediately, and idempotency relies on the queue's job id rather than extra locking.
+- 2026-09-21 — Correction: Option B's statement that BullMQ's `worker.on('failed', ...)` "fires exactly once all configured attempts are exhausted" is not supported by the sources. Context7 (BullMQ `src/classes/job.ts`) shows a failed attempt is retried while `attemptsMade + 1 < opts.attempts` and the error is not an `UnrecoverableError`, and `attemptsMade` is incremented after that decision. The `status = error` + `processing_error` write must be guarded by `job.attemptsMade >= job.opts.attempts`; non-retryable failures (e.g. a container/codec outside TD-11's allowlist) throw `UnrecoverableError` to skip the remaining attempts. Rationale: Context7 audit before `/plan-build` — the decision (Option B) is unchanged.
 
 ---
 
