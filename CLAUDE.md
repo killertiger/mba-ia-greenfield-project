@@ -10,7 +10,9 @@ More info in the project overview: [docs/project-plan.md](docs/project-plan.md)
 
 This is a monorepo with two main areas:
 
-- `nestjs-project/` — Backend API (NestJS 11, TypeScript, Express). Contains modules for users, channels, videos, comments, etc.
+- `nestjs-project/` — Backend API (NestJS 11, TypeScript, Express) **and** the video worker, which
+  shares the same codebase through a second entrypoint (`src/worker.ts`). Contains modules for
+  users, channels, videos, comments, etc.
 - `docs/` — Project documentation, architecture diagrams, and planning.
 - `next-frontend/` (Next.js) — not yet initialized
 
@@ -20,11 +22,45 @@ See `docs/diagrams/software-arch.mermaid` for the full diagram. Key containers:
 
 - **Frontend** (Next.js) → calls API via REST, streams from Object Storage
 - **API** (Nest.js) → business rules, auth, reads/writes DB, uploads to storage, publishes jobs to queue, sends emails
-- **Video Worker** (FFmpeg) → consumes jobs from queue, processes videos, updates DB and storage
+- **Video Worker** (Nest application context + FFmpeg) → consumes jobs from the queue, extracts
+  metadata with `ffprobe`, generates the thumbnail with `ffmpeg`, updates DB and storage. Runs as
+  the `video-worker` Compose service, with no HTTP port.
 - **Database** (PostgreSQL) → users, channels, videos, comments, likes
 - **Object Storage** (S3/MinIO) → video files and thumbnails
-- **Message Queue** (TBD) → video processing job queue
+- **Message Queue** (BullMQ on Redis) → video processing and maintenance job queues
 - **Email Service** (SMTP) → account confirmation and password recovery
+
+## Videos (Phase 03)
+
+Upload is **client-driven**: the API only signs URLs, and the video bytes never pass through it.
+
+**Lifecycle:** `draft → processing → ready | error`
+
+| Transition | Trigger |
+|---|---|
+| → `draft` | `POST /videos` pre-registers the video and opens an S3 multipart upload |
+| `draft` → `processing` | `/upload/complete` — parts completed and the stored size verified; `process-video` job enqueued |
+| `draft` → `error` | size mismatch on completion, or the hourly sweep abandoning a >24h-old open upload |
+| `processing` → `ready` | the worker persisted duration, dimensions, metadata and thumbnail |
+| `processing` → `error` | last retry failed, or an unrecoverable error (unsupported container/codec) |
+
+**Endpoints** (all owner-only in this phase; the slug is an 11-char `nanoid`):
+
+| Endpoint | Purpose |
+|---|---|
+| `POST /videos` | Pre-register the draft; returns one presigned `UploadPart` URL per part |
+| `POST /videos/:slug/upload/part-urls` | Re-issue URLs for missing parts (resume an interrupted upload) |
+| `POST /videos/:slug/upload/complete` | Complete the multipart upload, verify the size, enqueue processing |
+| `GET /videos/:slug` | Status, extracted metadata, presigned thumbnail URL, failure reason |
+| `GET /videos/:slug/stream` | Presigned URL for playback; storage answers `Range` with `206` |
+| `GET /videos/:slug/download` | Presigned URL with `Content-Disposition: attachment` |
+
+**Storage layout** — single bucket `streamtube`: `videos/{id}/original.{mp4,webm}` and
+`videos/{id}/thumbnail.jpg`.
+
+**Queues** (BullMQ on Redis): `video-processing` carries `process-video` (`jobId` = video id,
+3 attempts, exponential backoff) and `video-maintenance` carries the hourly
+`sweep-abandoned-uploads`. Producers run in the API, consumers in the worker.
 
 ## Docker Networking
 
@@ -36,6 +72,11 @@ Inside a container, `localhost` refers to the container itself, not the host mac
 - **Wrong:** `DB_HOST=localhost`
 
 This applies to all environment variables, configuration files, and code that references service hosts.
+
+**One documented exception:** `S3_PUBLIC_ENDPOINT` is `http://localhost:9000` on purpose. Presigned
+storage URLs are consumed by the client (browser or host machine), outside the Docker network, so
+they must be signed for a host reachable from there. Container-to-container calls keep using
+`S3_ENDPOINT=http://minio:9000`. See `nestjs-project/CLAUDE.md` → "Storage Endpoints".
 
 ## Working Principles
 
