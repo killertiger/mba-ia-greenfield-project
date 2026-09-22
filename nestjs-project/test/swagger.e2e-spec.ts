@@ -1,4 +1,6 @@
 import { INestApplication, ValidationPipe } from '@nestjs/common';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { Test } from '@nestjs/testing';
 import { SwaggerModule } from '@nestjs/swagger';
 import request from 'supertest';
@@ -6,7 +8,17 @@ import { App } from 'supertest/types';
 import { AppModule } from '../src/app.module';
 import { DomainExceptionFilter } from '../src/common/filters/domain-exception.filter';
 import { ValidationExceptionFilter } from '../src/common/filters/validation-exception.filter';
-import { buildSwaggerConfig } from '../src/swagger/swagger-document';
+import { buildSwaggerDocument } from '../src/swagger/swagger-document';
+
+interface OpenApiOperation {
+  security?: Record<string, string[]>[];
+  responses: Record<string, { content?: Record<string, unknown> }>;
+}
+
+interface OpenApiPath {
+  get?: OpenApiOperation;
+  post?: OpenApiOperation;
+}
 
 async function createApp(withSwagger: boolean): Promise<INestApplication<App>> {
   const moduleFixture = await Test.createTestingModule({
@@ -27,7 +39,8 @@ async function createApp(withSwagger: boolean): Promise<INestApplication<App>> {
   );
 
   if (withSwagger) {
-    const document = SwaggerModule.createDocument(app, buildSwaggerConfig());
+    // Same builder as main.ts, so extraModels (the error envelope) are present.
+    const document = buildSwaggerDocument(app);
     SwaggerModule.setup('api/docs', app, document, {
       customSiteTitle: 'StreamTube API Docs',
       swaggerOptions: { persistAuthorization: true },
@@ -77,6 +90,71 @@ describe('Swagger endpoints (e2e)', () => {
       ).toMatchObject({
         'access-token': { type: 'http', scheme: 'bearer', bearerFormat: 'JWT' },
       });
+    });
+
+    it('documents the six video endpoints, each secured with the bearer scheme', async () => {
+      const res = await request(app.getHttpServer())
+        .get('/api/docs-json')
+        .expect(200);
+      const paths = (res.body as { paths: Record<string, OpenApiPath> }).paths;
+
+      const videoOperations: [string, keyof OpenApiPath][] = [
+        ['/videos', 'post'],
+        ['/videos/{slug}', 'get'],
+        ['/videos/{slug}/upload/part-urls', 'post'],
+        ['/videos/{slug}/upload/complete', 'post'],
+        ['/videos/{slug}/stream', 'get'],
+        ['/videos/{slug}/download', 'get'],
+      ];
+
+      for (const [path, method] of videoOperations) {
+        const operation = paths[path]?.[method];
+        expect(operation).toBeDefined();
+        expect(operation!.security).toEqual(
+          expect.arrayContaining([{ 'access-token': [] }]),
+        );
+      }
+    });
+
+    it('documents every response status of the upload completion endpoint', async () => {
+      const res = await request(app.getHttpServer())
+        .get('/api/docs-json')
+        .expect(200);
+      const paths = (res.body as { paths: Record<string, OpenApiPath> }).paths;
+
+      const operation = paths['/videos/{slug}/upload/complete'].post!;
+      expect(Object.keys(operation.responses).sort()).toEqual([
+        '202',
+        '400',
+        '401',
+        '404',
+        '409',
+        '422',
+      ]);
+
+      // Error bodies all reference the shared domain error envelope.
+      const conflict = operation.responses['409'].content?.[
+        'application/json'
+      ] as { schema?: { $ref?: string } } | undefined;
+      expect(conflict?.schema?.$ref).toBe(
+        '#/components/schemas/ApiErrorEnvelope',
+      );
+      const schemas = (
+        res.body as { components: { schemas: Record<string, unknown> } }
+      ).components.schemas;
+      expect(schemas.ApiErrorEnvelope).toBeDefined();
+    });
+
+    it('matches the committed openapi.json', async () => {
+      // Guards against the versioned spec drifting from the code.
+      const res = await request(app.getHttpServer())
+        .get('/api/docs-json')
+        .expect(200);
+      const committed = JSON.parse(
+        readFileSync(join(__dirname, '..', 'openapi.json'), 'utf8'),
+      ) as unknown;
+
+      expect(res.body).toEqual(committed);
     });
 
     it('GET /api/docs-yaml returns 200 with YAML content', async () => {

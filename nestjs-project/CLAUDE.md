@@ -13,6 +13,12 @@ docker compose ps   # all services must show status "running"
 Then verify each infrastructure service is actually ready to accept connections — not just running:
 
 - **PostgreSQL:** `docker compose exec db pg_isready -U streamtube` — expect `accepting connections`
+- **Redis:** `docker compose exec redis redis-cli ping` — expect `PONG`
+- **MinIO:** `curl -f http://localhost:9000/minio/health/live` — expect HTTP 200
+- **MinIO bucket:** the one-shot `minio-init` service must show `Exited (0)`; it creates the `streamtube` bucket idempotently
+
+The `video-worker` service is part of the infrastructure — it is a queue consumer, not the HTTP
+application, so `docker compose up -d` starts it and `docker compose ps` must show it `running`.
 
 Only start the NestJS dev server (`npm run start:dev`) when the user **explicitly** asks to run the application — never as part of "start the environment".
 
@@ -34,6 +40,12 @@ docker compose exec nestjs-api npm run start:dev
 Services:
 - `nestjs-api` — NestJS API, port `3000`
 - `db` — PostgreSQL 17, port `5432`, database `streamtube`, user/password `streamtube`
+- `redis` — Redis 7, port `6379`, BullMQ backend
+- `minio` — S3-compatible object storage, API on `9000`, console on `9001`
+- `minio-init` — one-shot job that creates the `streamtube` bucket and exits
+- `video-worker` — standalone Nest application context (no HTTP port) that consumes the
+  `video-processing` and `video-maintenance` queues; same image and source volume as `nestjs-api`
+- `mailpit` — SMTP capture, UI on `8025`
 
 All verification and teardown commands run on the **host machine**:
 
@@ -63,6 +75,9 @@ npm run start:dev                        # Dev server with hot-reload
 npm run build                            # Compile to dist/
 npm run start:prod                       # Run compiled build
 
+npm run start:worker                     # Video worker (compiled)
+npm run start:worker:dev                 # Video worker with hot-reload
+
 npm test                                 # Unit tests
 npm run test:watch                       # Unit tests in watch mode
 npm run test:cov                         # Coverage report
@@ -78,8 +93,11 @@ npm run format                           # Prettier formatting
 ```bash
 docker compose ps
 docker compose logs nestjs-api
+docker compose logs video-worker
 docker compose exec db pg_isready -U streamtube
+docker compose exec redis redis-cli ping
 curl http://localhost:3000
+curl -f http://localhost:9000/minio/health/live
 ```
 
 ### Test execution
@@ -94,6 +112,23 @@ docker compose exec nestjs-api npm run test:e2e   # already configured
 Parallel execution causes FK violations, deadlocks, and cross-suite contamination because suites truncate or seed shared tables concurrently.
 
 During active development, run only the tests related to the file being changed (`npm test -- path/to/file.spec.ts`). Before declaring a task done, run the full suite — see the global `CLAUDE.md` → "Definition of Done (Technical)".
+
+Integration and e2e suites run against the **real** Compose services — Postgres, MinIO and Redis
+are never mocked. Two consequences:
+
+- The infrastructure must be up (`docker compose up -d`) before running them.
+- `test/videos-pipeline.e2e-spec.ts` additionally needs the `video-worker` container running: it
+  waits for the worker to move a video to `ready` and fails after 60s otherwise.
+
+`npm test` currently needs `--forceExit` to terminate: a pre-existing open handle from the
+Handlebars mail adapter keeps the Jest process alive after the suites finish.
+
+### Media binaries
+
+`Dockerfile.dev` installs `ffmpeg` (which also provides `ffprobe`). `MediaProbeService` spawns both
+with `spawn(..., { shell: false })` and an argument array — never a shell string — so paths with
+spaces or shell metacharacters stay a single argument. Video fixtures are generated at test time by
+`test/fixtures/sample-video.ts`; no binary media file is committed to the repository.
 
 ## Long-running Processes
 
@@ -124,6 +159,21 @@ These settings are required in `package.json` (jest config) and `test/jest-e2e.j
 
 Do not add new test-file suffixes; if a new test type is needed, update the regex deliberately.
 
+## Storage Endpoints: the one documented exception to Docker networking
+
+The root `CLAUDE.md` requires Compose service names as hosts. Object storage has **two** endpoints
+because presigned URLs are consumed outside the Docker network:
+
+- `S3_ENDPOINT=http://minio:9000` — container-to-container (the API and the worker talk to MinIO).
+- `S3_PUBLIC_ENDPOINT=http://localhost:9000` — the host that the **client** (browser, or an HTTP
+  tool on the host machine) uses. Presigned URLs are signed for this host, so it must be reachable
+  from outside the network. `localhost` here is correct and is not a violation of the rule.
+
+`StorageService` keeps one `S3Client` per endpoint and picks between them with the `audience`
+option (`'internal'` vs `'public'`). Under Jest, `test/setup-test-env.ts` forces
+`S3_PUBLIC_ENDPOINT = S3_ENDPOINT`, because tests run *inside* the container and cannot resolve
+`localhost:9000`.
+
 ## Environment File Conventions
 
 `.env` is parsed by both Docker Compose and `dotenv` — values containing shell-special characters (`<`, `>`, `|`, `&`, spaces) **must be quoted** or rewritten:
@@ -148,6 +198,21 @@ NestJS with standard module structure. Source lives in `src/`, compiled output i
 
 - Each domain feature gets its own module (e.g., `UsersModule`, `VideosModule`) registered in `AppModule`
 - Controllers handle HTTP routing; Services hold business logic; both are scoped to their module
+
+### Two entrypoints, one codebase
+
+| Entrypoint | Root module | Bootstrap | Loads |
+|---|---|---|---|
+| `src/main.ts` | `AppModule` | `NestFactory.create` (HTTP) | Controllers, auth, mailer, Swagger |
+| `src/worker.ts` | `WorkerModule` | `NestFactory.createApplicationContext` (no HTTP) | `VideoProcessingModule` only |
+
+`DatabaseModule` holds the single `TypeOrmModule.forRootAsync` used by both, so connection
+parameters are never duplicated. `WorkerModule` also imports `UsersModule`: `autoLoadEntities` only
+discovers entities registered by modules in the graph, and `Video` relates to `Channel`, which
+relates to `User`.
+
+Queue-facing code is split by process: producers (`VideoProcessingQueue`) live in the API,
+consumers (`VideoProcessingProcessor`, `VideoMaintenanceProcessor`) live in the worker.
 
 ## Code Conventions
 
