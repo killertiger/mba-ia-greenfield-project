@@ -120,8 +120,14 @@ are never mocked. Two consequences:
 - `test/videos-pipeline.e2e-spec.ts` additionally needs the `video-worker` container running: it
   waits for the worker to move a video to `ready` and fails after 60s otherwise.
 
-`npm test` currently needs `--forceExit` to terminate: a pre-existing open handle from the
-Handlebars mail adapter keeps the Jest process alive after the suites finish.
+Both suites exit on their own — **do not add `--forceExit`**. If Jest ever hangs, it is reporting a
+real leak (a `DataSource` that was not destroyed, an app that was not closed); run
+`npx jest --detectOpenHandles` and fix the leak instead of forcing the exit.
+
+One exception is already handled centrally: `@css-inline/css-inline`, a native binding that the
+Handlebars mail adapter imports at load time, registers a `CustomGC` handle that is never released.
+Both Jest configs map it to `test/stubs/css-inline.stub.ts`, which is a no-op because the mail
+templates contain no CSS.
 
 ### Media binaries
 

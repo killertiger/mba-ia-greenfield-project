@@ -153,7 +153,7 @@
 | Item | Resultado |
 |---|---|
 | `npx tsc --noEmit` | ✅ exit 0 |
-| Unit + integration (`jest --runInBand`) | ✅ 227/227 em 39 suítes (precisa de `--forceExit`, ver abaixo) |
+| Unit + integration (`jest --runInBand`) | ✅ 227/227 em 39 suítes |
 | E2E (`npm run test:e2e -- --runInBand`, com `video-worker` no ar) | ✅ 85/85 em 9 suítes |
 | `npm run build` (inclui `dist/worker.js`) | ✅ exit 0 |
 | `npm run lint` | ✅ 0 erros / 0 avisos (eram 150/40 pré-existentes — resolvidos em tarefa própria, ver abaixo) |
@@ -167,8 +167,8 @@ e `minio`/`redis`/`video-worker` subindo com `docker compose up -d`.
 
 1. ~~**`npm run lint` falha** com 150 erros / 40 avisos em 11 arquivos das fases 01–02.~~
    **Resolvido** em tarefa separada logo após o fim da fase — ver "Limpeza do lint" abaixo.
-2. **`npm test` não encerra sozinho**, exigindo `--forceExit`: handle aberto do adapter Handlebars do
-   `@nestjs-modules/mailer`, importado no `MailModule` da fase 02. Continua em aberto.
+2. ~~**`npm test` não encerra sozinho**, exigindo `--forceExit`.~~ **Resolvido** em tarefa separada —
+   ver "Handle aberto do Jest" abaixo.
 
 ## Limpeza do lint (tarefa separada, pós-fase)
 
@@ -202,5 +202,27 @@ Corrigido para `IsNull()`; o teste continua passando com o filtro agora real.
 
 ### Outros follow-ups
 
-3. Renomear a branch `phase-03-videos` para `feature/*` a partir de `dev` (adiado pelo usuário no início da fase).
+3. ~~Renomear a branch `phase-03-videos` para `feature/*` a partir de `dev`.~~ **Feito:** a branch
+   longeva `dev` não existia (nem local nem no remoto) e foi criada a partir de `main`; como `main`
+   era ancestral do HEAD, `feature/phase-03-videos` já descende de `dev` sem reescrever histórico.
+   Ambas publicadas; `origin/phase-03-videos` foi mantida por decisão do usuário (aponta para o mesmo
+   commit). Falta o merge de `feature/phase-03-videos` → `dev` quando a fase for integrada.
 4. `ioredis@^5.11.1` foi instalado na SI-03.4 (peer opcional que o `bullmq@6` não instala) e não consta em `library-refs.md`.
+
+## Handle aberto do Jest (tarefa separada, pós-fase)
+
+`npm test` e `npm run test:e2e` encerram sozinhos (exit 0 em 17 s e 14 s), **sem `--forceExit`**, e
+`--detectOpenHandles` não reporta mais nenhum handle.
+
+A causa não era exatamente a anotada: quem prende o processo é `@css-inline/css-inline`, um binding
+nativo (N-API) que o `HandlebarsAdapter` importa no topo do módulo — só carregar o adapter já
+registra um handle `CustomGC` que nunca é liberado. Não há nada a fechar pelo lado do JS.
+
+Ambas as configs do Jest passaram a mapear esse pacote para `test/stubs/css-inline.stub.ts`
+(`moduleNameMapper`), um `inline()` identidade. É seguro porque os dois templates de e-mail não têm
+CSS nenhum — a inlinização é no-op para eles; o `mail.service.integration-spec.ts` continua enviando
+e-mail de verdade pelo adapter e conferindo o HTML no Mailpit.
+
+A alternativa seria `forceExit: true` fixo na config, que foi descartada: ela calaria também
+vazamentos reais (um `DataSource` sem `destroy()`, um app sem `close()`), justamente o que o
+testing-guide manda detectar. Com o stub, a detecção do Jest segue valendo para o resto.
