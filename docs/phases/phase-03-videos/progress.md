@@ -156,7 +156,7 @@
 | Unit + integration (`jest --runInBand`) | ✅ 227/227 em 39 suítes (precisa de `--forceExit`, ver abaixo) |
 | E2E (`npm run test:e2e -- --runInBand`, com `video-worker` no ar) | ✅ 85/85 em 9 suítes |
 | `npm run build` (inclui `dist/worker.js`) | ✅ exit 0 |
-| `npm run lint` | ❌ **150 erros / 40 avisos, todos pré-existentes das fases 01–02** |
+| `npm run lint` | ✅ 0 erros / 0 avisos (eram 150/40 pré-existentes — resolvidos em tarefa própria, ver abaixo) |
 
 **Entregáveis da fase (de `docs/project-plan.md`):** todos atendidos — upload de até 10 GiB direto ao
 MinIO por multipart pré-assinado (o e2e cobre o limite de 10737418240 bytes → 103 partes), processamento
@@ -165,13 +165,40 @@ e `minio`/`redis`/`video-worker` subindo com `docker compose up -d`.
 
 ### Pendências que bloqueiam a Definition of Done (pré-existentes, fora do escopo desta fase)
 
-1. **`npm run lint` falha** com 150 erros / 40 avisos em 11 arquivos das fases 01–02
-   (`auth.service.spec.ts`, `channels.service.ts`, `create-test-data-source.ts`, `auth.e2e-spec.ts`,
-   entre outros). Nenhum arquivo da fase 03 aparece na lista; os erros nos dois arquivos que esta fase
-   tocou são de linhas anteriores a ela. Corrigir isso é uma tarefa própria — a regra de Scope Limits
-   pede issue separada em vez de misturar com mudança funcional.
+1. ~~**`npm run lint` falha** com 150 erros / 40 avisos em 11 arquivos das fases 01–02.~~
+   **Resolvido** em tarefa separada logo após o fim da fase — ver "Limpeza do lint" abaixo.
 2. **`npm test` não encerra sozinho**, exigindo `--forceExit`: handle aberto do adapter Handlebars do
-   `@nestjs-modules/mailer`, importado no `MailModule` da fase 02.
+   `@nestjs-modules/mailer`, importado no `MailModule` da fase 02. Continua em aberto.
+
+## Limpeza do lint (tarefa separada, pós-fase)
+
+`npm run lint` passa com **0 erros e 0 avisos** (eram 150 erros / 40 avisos em 11 arquivos).
+`tsc --noEmit` = 0, 227 unit/integration e 85 e2e continuam verdes, `npm run build` OK.
+
+Corrigido por causa-raiz, sem relaxar nenhuma regra do ESLint:
+
+- **`src/test/mailpit.ts`** — a API do Mailpit era `any`; tipada (`MailpitMessageSummary`,
+  `MailpitMessage`), o que sozinho eliminou os 16 erros de `mail.service.integration-spec.ts`.
+- **`src/channels/channels.service.ts`** (único arquivo de produção com erro) — o guard de violação
+  única lia `err as any`. Agora lê `err.driverError`, que é onde o TypeORM guarda `code`/`detail`;
+  os dois specs que forjavam o erro na casca passaram a construí-lo como o TypeORM constrói.
+  `src/videos/videos.service.ts` foi alinhado ao mesmo padrão.
+- **`src/auth/auth.service.spec.ts`** (o maior: 45 erros + 32 avisos) — mocks declarados como
+  `jest.Mocked<Classe>` disparavam `unbound-method` em toda asserção e forçavam `as any` em toda
+  fixture. Trocados por objetos de `jest.Mock` (mesmo padrão da fase 03), o que zerou os 19
+  `unbound-method` e os 32 `no-unsafe-argument` de uma vez; as fixtures lidas de volta ganharam
+  tipo real (`as unknown as User` etc.).
+- **`test/auth.e2e-spec.ts`** — 42 acessos a `res.body.X` (o supertest tipa `body` como `any`);
+  resolvidos por um acessor `body(res): ApiBody`.
+- **Acesso ao `MailService` privado** em 4 pontos (`(authService as any).mailService`) — trocado por
+  um acessor tipado `mailerOf(authService)`.
+- Pontuais: `Function` em `create-test-data-source.ts`, import não usado, `expect.any(String)` sem
+  tipo, `({}) as any` nos mocks de `ArgumentsHost`, e o `validate()` do spec de env tipado uma vez.
+
+**Bug encontrado no caminho:** `auth.service.integration-spec.ts` filtrava
+`findBy({ family, revoked_at: null } as any)` — o `as any` escondia que o TypeORM **descarta
+silenciosamente** `null` em `where` (regra `typeorm-queries.md`). O filtro nunca foi aplicado.
+Corrigido para `IsNull()`; o teste continua passando com o filtro agora real.
 
 ### Outros follow-ups
 

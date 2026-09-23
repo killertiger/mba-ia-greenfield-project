@@ -36,9 +36,15 @@ import {
 const PG_UNIQUE_VIOLATION = '23505';
 const SLUG_COLUMN = 'slug';
 
+/** The driver error carried by TypeORM has no public type for these fields. */
+interface PgDriverError {
+  code?: string;
+  detail?: string;
+}
+
 function isSlugUniqueViolation(error: unknown): boolean {
   if (!(error instanceof QueryFailedError)) return false;
-  const driverError = error as unknown as { code?: string; detail?: string };
+  const driverError = error.driverError as PgDriverError;
   return (
     driverError.code === PG_UNIQUE_VIOLATION &&
     typeof driverError.detail === 'string' &&

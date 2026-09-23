@@ -21,12 +21,12 @@ const CHANNEL_ID = '11111111-1111-1111-1111-111111111111';
 const USER_ID = '22222222-2222-2222-2222-222222222222';
 
 function slugUniqueViolation(): QueryFailedError {
-  const error = new QueryFailedError('INSERT', [], new Error('duplicate'));
-  Object.assign(error, {
+  // Built the way TypeORM does it: the PG fields live on the driver error.
+  const driverError = Object.assign(new Error('duplicate key'), {
     code: '23505',
     detail: 'Key (slug)=(abcdefghijk) already exists.',
   });
-  return error;
+  return new QueryFailedError('INSERT', [], driverError);
 }
 
 describe('VideosService', () => {

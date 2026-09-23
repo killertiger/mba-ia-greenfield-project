@@ -10,11 +10,16 @@ const requiredEnv = {
   S3_SECRET_KEY: 'secret',
 };
 
-const validate = (env: Record<string, string>) =>
+interface ValidationOutcome {
+  value: Record<string, unknown>;
+  error?: Error;
+}
+
+const validate = (env: Record<string, string>): ValidationOutcome =>
   envValidationSchema.validate(
     { ...requiredEnv, ...env },
     { allowUnknown: true, abortEarly: false },
-  );
+  ) as ValidationOutcome;
 
 describe('envValidationSchema — SWAGGER_ENABLED', () => {
   it('should reject SWAGGER_ENABLED with an invalid value', () => {
@@ -58,10 +63,7 @@ describe('envValidationSchema — object storage and queue', () => {
   );
 
   it('should apply the storage and queue defaults when only required keys are set', () => {
-    const { value, error } = validate({}) as {
-      value: Record<string, unknown>;
-      error?: Error;
-    };
+    const { value, error } = validate({});
 
     expect(error).toBeUndefined();
     expect(value).toMatchObject({
