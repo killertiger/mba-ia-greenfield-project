@@ -36,7 +36,7 @@
 - **Status:** completed
 - **Tests:** 3 passing (`src/queue/queue.module.spec.ts`, `src/videos/video-processing.queue.integration-spec.ts` against real Redis — `jobId` = video id, `attempts: 3`, exponential backoff 5000ms, and a duplicate enqueue producing a single job); Jest exits cleanly (no leaked Redis connection)
 - **Observations:**
-  - `bullmq@6` declares `ioredis` as an **optional peer** (`>=5.0.0`) and does not install it: both specs failed with "BullMQ could not load the optional 'ioredis' package". Installed `ioredis@^5.11.1` (CommonJS, the mature line; `6.0.0` is brand new). This library is not listed in `library-refs.md`, which was written before the gap was known.
+  - `bullmq@6` declares `ioredis` as an **optional peer** (`>=5.0.0`) and does not install it: both specs failed with "BullMQ could not load the optional 'ioredis' package". Installed `ioredis@^5.11.1` (CommonJS, the mature line; `6.0.0` is brand new). It was missing from `library-refs.md`, which was written before the gap was known; the entry was added afterwards (doc fetched via Context7 `/redis/ioredis`).
   - Queue/job/scheduler names and the retry policy live in `src/queue/queue.constants.ts` per the constants rule; `VideoProcessingQueue` reads them instead of repeating literals.
   - `QueueModule` exports `BullModule` so consumers (`VideosModule`, and later the worker) can inject the queues.
 
@@ -207,7 +207,11 @@ Corrigido para `IsNull()`; o teste continua passando com o filtro agora real.
    era ancestral do HEAD, `feature/phase-03-videos` já descende de `dev` sem reescrever histórico.
    Ambas publicadas; `origin/phase-03-videos` foi mantida por decisão do usuário (aponta para o mesmo
    commit). Falta o merge de `feature/phase-03-videos` → `dev` quando a fase for integrada.
-4. `ioredis@^5.11.1` foi instalado na SI-03.4 (peer opcional que o `bullmq@6` não instala) e não consta em `library-refs.md`.
+4. ~~`ioredis@^5.11.1` não consta em `library-refs.md`.~~ **Feito:** entrada adicionada (frontmatter,
+   tabela de compatibilidade e seção própria), com a doc consultada no Context7 (`/redis/ioredis`).
+   Registra o essencial: é peer **opcional** do `bullmq@6` — por isso precisou ser instalado à mão —,
+   não é importado por nenhum arquivo de `src/`, e o `maxRetriesPerRequest: null` exigido por workers
+   é aplicado pelo próprio BullMQ quando a conexão vem de opções simples, como é o nosso caso.
 
 ## Handle aberto do Jest (tarefa separada, pós-fase)
 

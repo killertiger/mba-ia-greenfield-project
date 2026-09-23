@@ -8,6 +8,10 @@ libs:
     version: "^6.3.8"
     context7_id: "/taskforcesh/bullmq"
     fetched_at: "2026-09-21T20:54:08-03:00"
+  "ioredis":
+    version: "^5.11.1"
+    context7_id: "/redis/ioredis"
+    fetched_at: "2026-09-23T09:35:41-03:00"
   "@aws-sdk/client-s3":
     version: "^3.1137.0"
     context7_id: "/aws/aws-sdk-js-v3"
@@ -38,6 +42,7 @@ sources_mtime:
 |---------|--------|----------------|
 | `@nestjs/bullmq` | `^11.0.5` | `12.0.0` is `"type": "module"` (ESM). `11.0.5` is CJS and its peers accept `bullmq ^3–^6` and `@nestjs/core ^10–^11`. |
 | `bullmq` | `^6.3.8` | Latest; ships `dist/cjs`. |
+| `ioredis` | `^5.11.1` | `6.0.0` is brand new; `5.x` is the mature line and is CJS (`"type": "commonjs"`, `main: ./built/index.js`). |
 | `@aws-sdk/*` | `^3.1137.0` | Latest; `main` is `dist-cjs`. |
 | `nanoid` | `^3.3.19` | `5.x` and `6.x` are ESM-only (Context7 `/ai/nanoid`: "CommonJS require syntax is not supported in Nanoid v6"). `3.x` exposes a `require` export (`index.cjs`). |
 
@@ -125,6 +130,28 @@ await queue.upsertJobScheduler(
 ```
 
 - `upsertJobScheduler(id, repeatOpts, template)` is idempotent per scheduler id — safe to call on every worker boot. `repeatOpts` accepts `every` (ms) or a cron `pattern`.
+
+### ioredis
+
+Used by: `TD-01` (queue backend) — **indirectly**. Nothing in `src/` imports `ioredis`; it is the Redis driver BullMQ instantiates from the connection options passed to `BullModule.forRootAsync`.
+
+**Why it is pinned at all:** `bullmq@6` declares `ioredis` as an **optional peer** (`peerDependenciesMeta.ioredis.optional: true`, range `>=5.0.0`) and therefore does **not** install it. Without an explicit dependency the queue fails at runtime with *"BullMQ could not load the optional 'ioredis' package"* — which is exactly how it surfaced in SI-03.4, with both queue specs red. It was added to `dependencies` (not `devDependencies`): the API and the worker both need it in production.
+
+```typescript
+// How the connection is actually configured (src/queue/queue.module.ts).
+// Plain options — BullMQ builds the ioredis client itself.
+BullModule.forRootAsync({
+  imports: [ConfigModule],
+  inject: [queueConfig.KEY],
+  useFactory: (queue: ConfigType<typeof queueConfig>) => ({
+    connection: { host: queue.redisHost, port: queue.redisPort },
+  }),
+});
+```
+
+- **`maxRetriesPerRequest` must be `null` for blocking clients** (workers). We do not set it: BullMQ assigns `this.opts.maxRetriesPerRequest = null` itself when it creates the connection from plain options (`bullmq/dist/cjs/classes/redis-connection.js:120`). The constraint only becomes ours if someone later passes a pre-built `new Redis(...)` instance instead — BullMQ then only warns (*"WARNING! Your redis options maxRetriesPerRequest must be null"*) and the worker misbehaves under connection loss. The ioredis default is `20` (Context7 `/redis/ioredis`).
+- **Closing:** `quit()` waits for pending replies; `disconnect()` closes immediately and may drop them. Relevant to test teardown — closing the Nest app/module closes the queues, which is why the suites exit without leaking a Redis handle.
+- Host comes from the Compose service name (`redis`), per the project's Docker networking rule.
 
 ### @aws-sdk/client-s3
 
