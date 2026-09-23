@@ -74,7 +74,14 @@ afterAll(async () => {
 });
 ```
 
-If Jest still hangs, use `--forceExit` as a last resort, but investigate the leak first.
+**Do not reach for `--forceExit`.** Both suites exit on their own today, so a hang means a real
+leak in the code under test — run `npx jest --detectOpenHandles` and close what it names. Forcing
+the exit would silence every future leak too.
+
+The one handle that cannot be closed from JS is already neutralized centrally: the Handlebars mail
+adapter imports `@css-inline/css-inline`, a native N-API binding that registers a `CustomGC` handle
+at load time. Both Jest configs map it to `test/stubs/css-inline.stub.ts` via `moduleNameMapper`
+(a no-op, since the mail templates carry no CSS).
 
 ---
 

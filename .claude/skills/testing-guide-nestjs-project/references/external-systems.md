@@ -37,47 +37,34 @@ How each external system is handled in tests. These strategies were confirmed wi
 
 ---
 
-## Object Storage — Local Filesystem
+## Object Storage — Real (Docker MinIO)
 
-**Strategy:** Local filesystem storage in development and tests. S3 in production.
+**Strategy:** Real S3-compatible storage via the Docker `minio` service (bucket created by the one-shot `minio-init` service). Same approach as PostgreSQL and Mailpit — no local-filesystem adapter, no mocked S3 client. Decided in `phase-03-videos/TD-03` (revision): presigned multipart uploads, `HeadObject`, `AbortMultipartUpload` and ranged presigned GETs cannot be exercised by a local adapter.
 
-**Approach:**
-- The storage layer should use an abstraction (e.g., `StorageService` interface) that allows switching between local filesystem and S3
-- In tests, use the local filesystem adapter — no mocking needed
-- Use a temporary directory for test uploads: `os.tmpdir()` or a dedicated `test-uploads/` directory
-- Clean up test files in `afterAll`
+**Where it is used:**
+- `StorageService` (`src/storage/`) wraps the AWS SDK v3 (`@aws-sdk/client-s3` + `@aws-sdk/s3-request-presigner`) with two clients: one on `S3_ENDPOINT` (server-side operations) and one on `S3_PUBLIC_ENDPOINT` (used only to sign URLs).
+- Integration and e2e tests exercise it against the real MinIO container.
 
-**Setup pattern:**
+**Presigned URLs inside tests:** tests run inside the `nestjs-api` container, where the client-facing `S3_PUBLIC_ENDPOINT` (`http://localhost:9000`) is unreachable. `test/setup-test-env.ts` (registered in `setupFiles` of both Jest configs) sets `S3_PUBLIC_ENDPOINT = S3_ENDPOINT`, so URLs are signed for `http://minio:9000` and tests can `fetch` them directly.
+
+**Test isolation:**
+- Write test objects under a unique prefix per test file (e.g., `test/<suite>-<random>/...`) and delete them in `afterAll` with `StorageService.deleteObject`.
+- Abort any multipart upload a test leaves open (`abortMultipartUpload`), so parts do not accumulate in the bucket.
+
+**Unit tests:** mock `StorageService` at the module boundary (per `mock-health-rules.md`) — never the S3 client internals.
+
+**Integration test example:**
 ```typescript
-// In test module setup
-{
-  provide: 'STORAGE_CONFIG',
-  useValue: {
-    driver: 'local',
-    basePath: path.join(os.tmpdir(), 'streamtube-test-uploads'),
-  },
-}
-```
-
-**Integration test:**
-```typescript
-import * as fs from 'fs';
-import * as path from 'path';
-import * as os from 'os';
-
 describe('StorageService (integration)', () => {
-  const testDir = path.join(os.tmpdir(), 'streamtube-test-uploads');
+  it('uploads a part through a presigned URL and completes the upload', async () => {
+    const uploadId = await storage.createMultipartUpload(key, 'video/mp4');
+    const url = await storage.presignUploadPart(key, uploadId, 1);
 
-  afterAll(() => {
-    fs.rmSync(testDir, { recursive: true, force: true });
-  });
+    const res = await fetch(url, { method: 'PUT', body: Buffer.alloc(1024) });
+    const etag = res.headers.get('etag')!;
 
-  it('should upload and retrieve a file', async () => {
-    const buffer = Buffer.from('test content');
-    const key = await storageService.upload(buffer, 'test.txt');
-
-    const retrieved = await storageService.get(key);
-    expect(retrieved.toString()).toBe('test content');
+    await storage.completeMultipartUpload(key, uploadId, [{ partNumber: 1, etag }]);
+    expect(await storage.headObject(key)).toEqual({ contentLength: 1024 });
   });
 });
 ```
